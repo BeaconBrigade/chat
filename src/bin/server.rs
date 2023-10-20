@@ -7,6 +7,7 @@ use rusqlite::Connection;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
+    signal,
     sync::mpsc,
 };
 use tracing_subscriber::prelude::*;
@@ -89,16 +90,30 @@ async fn main() -> color_eyre::Result<()> {
     let listener = TcpListener::bind(addr).await?;
 
     loop {
-        let (stream, _) = listener.accept().await?;
-        let db_path = args.db_path.clone();
-        let user_to_task = user_to_task.clone();
-        tokio::spawn(async move {
-            let e = handle_connection(stream, db_path, user_to_task).await;
-            if let Err(e) = e {
-                tracing::error!("{e}")
+        tokio::select! {
+            Ok((stream, _)) = listener.accept() => {
+
+                let db_path = args.db_path.clone();
+                let user_to_task = user_to_task.clone();
+                tokio::spawn(async move {
+                    let e = handle_connection(stream, db_path, user_to_task).await;
+                    if let Err(e) = e {
+                        tracing::error!("{e}")
+                    }
+                });
             }
-        });
+            _ = signal::ctrl_c() => {
+                break
+            }
+            else => {
+                break
+            }
+        }
     }
+
+    tracing::info!("shutting down the server");
+
+    Ok(())
 }
 
 async fn handle_connection(

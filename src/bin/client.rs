@@ -4,13 +4,16 @@ use std::{
     net::SocketAddr,
     path::PathBuf,
     str::FromStr,
+    thread,
 };
 
 use argh::FromArgs;
 use chat::message::{ConnectInfo, Disconnect, DisconnectTy, Message, TextInfo};
+use futures::executor::block_on;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
+    signal,
     sync::mpsc,
 };
 use tracing_subscriber::prelude::*;
@@ -25,7 +28,7 @@ async fn main() -> color_eyre::Result<()> {
             tracing_subscriber::registry()
                 .with(args.log_level.map(Into::into).unwrap_or_else(|| {
                     tracing_subscriber::EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| "client=INFO".into())
+                        .unwrap_or_else(|_| "client=WARN".into())
                 }))
                 .with(
                     tracing_subscriber::fmt::layer()
@@ -37,7 +40,7 @@ async fn main() -> color_eyre::Result<()> {
             tracing_subscriber::registry()
                 .with(args.log_level.map(Into::into).unwrap_or_else(|| {
                     tracing_subscriber::EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| "client=INFO".into())
+                        .unwrap_or_else(|_| "client=WARN".into())
                 }))
                 .with(tracing_subscriber::fmt::layer().with_writer(io::stdout))
                 .init();
@@ -66,12 +69,15 @@ async fn main() -> color_eyre::Result<()> {
 
     // read input
     let (tx, mut rx) = mpsc::channel(4);
-    tokio::spawn(async move {
+    // using a thread and futures, because as a tokio task, this blocks the executor and prevents the program from exiting.
+    // if I turn this into a spawn_blocking in tokio, the program stops reading input, so instead I've made an OS thread
+    // which won't prevent the program from exiting and will automatically be cleaned up.
+    thread::spawn(move || {
         let mut buf = String::new();
         loop {
             buf.clear();
             io::stdin().read_line(&mut buf).unwrap();
-            tx.send(buf.clone()).await.unwrap();
+            block_on(tx.send(buf.clone())).unwrap();
         }
     });
 
@@ -79,7 +85,11 @@ async fn main() -> color_eyre::Result<()> {
         print!("::> ");
         io::stdout().flush().unwrap();
         tokio::select! {
-            Ok(msg) = read_message(&mut stream) => {
+            msg = read_message(&mut stream) => {
+                let Ok(msg) = msg else {
+                    tracing::warn!("server disconnected: {}", msg.unwrap_err());
+                    return Ok(());
+                };
                 tracing::info!("new message received: {msg:?}");
                 if let Message::Text(t) = msg {
                     // clear line and put cursor at start
@@ -92,6 +102,9 @@ async fn main() -> color_eyre::Result<()> {
                 tracing::info!("sending message: {msg:?}");
                 stream.write_all(serde_json::to_string(&msg)?.as_bytes()).await?;
             }
+            Ok(()) = signal::ctrl_c() => {
+                break
+            }
             else => {
                 break
             }
@@ -99,6 +112,7 @@ async fn main() -> color_eyre::Result<()> {
     }
 
     // exit the chats
+    tracing::info!("disconnecting");
     stream
         .write_all(
             serde_json::to_string(&Message::Disconnect(Disconnect {
