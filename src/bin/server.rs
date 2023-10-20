@@ -51,17 +51,10 @@ async fn main() -> color_eyre::Result<()> {
         [],
     )?;
     conn.execute(
-        "
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY NOT NULL
-        );",
-        [],
-    )?;
-    conn.execute(
         "CREATE TABLE IF NOT EXISTS chats (
             chat_id INTEGER PRIMARY KEY NOT NULL,
             channel_id INTEGER REFERENCES channels(channel_id) NOT NULL,
-            user_id INTEGER REFERENCES users(user_id) NOT NULL,
+            user_id INTEGER NOT NULL,
             username TEXT NOT NULL,
             message TEXT NOT NULL
         );
@@ -71,7 +64,7 @@ async fn main() -> color_eyre::Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS notifications (
             notification_id INTEGER PRIMARY KEY NOT NULL,
-            user_id REFERENCES users(user_id) NOT NULL,
+            user_id NOT NULL,
             channel_id REFERENCES channels(channel_id) NOT NULL
          );
     ",
